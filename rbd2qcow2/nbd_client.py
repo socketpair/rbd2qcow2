@@ -274,7 +274,7 @@ async def open_image(image_filename: str) -> NBDClient:
             # TODO: --load-snapshot
             'qemu-nbd',
             '--format=qcow2',
-            '--cache=writeback',
+            '--cache=unsafe',  # TODO: unknown BUG writeback is much slower even without any sync command (!)
             # /dev/fd/42 ? no, connect is not possible  to already opened socket..
             '--socket=%s' % sockpath,
         ]

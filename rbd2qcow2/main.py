@@ -117,12 +117,19 @@ async def do_transfer(
                 log.error('Aborting NBD due to transfer error: %r.', e)
                 await nbd_client.abort()
                 raise
+
+            log.debug('Fsyncing %s.', tmp_filename)
+            # workaround for opening image as unsafe
+            with open(tmp_filename, 'rb') as xxx:
+                os.fsync(xxx.fileno())
+            log.debug('Fsyncing complete.')
+
             os.chmod(tmp_filename, 0o400)
             os.rename(tmp_filename, qcow2_name)
             # Safe rename
             fd = os.open(qcow2_directory, os.O_DIRECTORY | os.O_RDONLY)
             try:
-                os.fdatasync(fd)
+                os.fsync(fd)
             finally:
                 os.close(fd)
             log.debug('Terminating NBD connection.')
