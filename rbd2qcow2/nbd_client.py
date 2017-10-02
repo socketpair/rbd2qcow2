@@ -294,7 +294,12 @@ async def open_image(image_filename: str) -> NBDClient:
         log.info('Connecting to qemu-nbd.')
 
         (reader, writer) = await asyncio.open_unix_connection(sockpath)
-        writer.transport.get_extra_info('socket').setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16 * 1024 * 1024)
+        sk = writer.transport.get_extra_info('socket')
+        sk.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16 * 1024 * 1024)
+        # sk.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUFFORCE, 16 * 1024 * 1024)
+        sk.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
+        # sk.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUFFORCE, 16 * 1024 * 1024)
+        del sk
 
         os.unlink(sockpath)
         buf = await reader.readexactly(16)
