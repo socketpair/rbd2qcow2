@@ -2,7 +2,7 @@ import asyncio
 import logging
 import threading
 import time
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import rados
 import rbd
@@ -86,13 +86,15 @@ class Transferrer:
                 raise RuntimeError('Transfer cancelled.')
             if future.exception() is not None:
                 raise RuntimeError('Transfer failed') from future.exception()
-            (bytes_transferred, start, end) = future.result()
+            (bytes_transferred, rbd_info, nbd_info) = future.result()
             self.total_bytes += bytes_transferred
             self.stat_total_bytes += bytes_transferred
-            if self.stat_min_start is None or start < self.stat_min_start:
-                self.stat_min_start = start
-            if self.stat_max_end is None or end > self.stat_max_end:
-                self.stat_max_end = end
+
+            if rbd_info is not None:
+                self.stat_rbd_stats.append(rbd_info)
+            if nbd_info is not None:
+                self.stat_nbd_stats.append(nbd_info)
+
         self.jobs_completed += len(done)
         self.stat_completed += len(done)
 
@@ -104,7 +106,6 @@ class Transferrer:
             return
 
         delta_time = now - self.prev_report_time
-        delta_transfer_time = self.stat_max_end - self.stat_min_start
 
         log.info(
             'Completed: %d%%: %2.2f GB, %2.2f MB/sec, %2.2f IOPS, avg lat %2.2f msec, avg IO size %2.2f KB, %d IOs.',
@@ -117,62 +118,61 @@ class Transferrer:
             self.stat_completed,  # Chunks
         )
 
-        log.info(
-            'RBD ops for %2.2f sec: %2.2f MB/sec, %2.2f IOPS, avg lat %2.2f msec, avg IO size %2.2f KB, %d IOs.',
-            delta_transfer_time,
-            self.stat_rbd_data / (delta_transfer_time * 1000000),  # RBD speed
-            self.stat_rbd_ops / delta_transfer_time,  # RBD IOPS
-            self.stat_rbd_time * 1000 / self.stat_rbd_ops,  # AVG latency (ms)
-            self.stat_rbd_data / (self.stat_rbd_ops * 1000),  # Avg chunk size
-            self.stat_rbd_ops,  # Chunks
-        )
-        log.info(
-            'NBD ops for %2.2f sec: %2.2f MB/sec, %2.2f IOPS, avg lat %2.2f msec, avg IO size %2.2f KB, %d IOs.',
-            delta_transfer_time,
-            self.stat_nbd_data / (delta_transfer_time * 1000000),  # RBD speed
-            self.stat_nbd_ops / delta_transfer_time,  # RBD IOPS
-            self.stat_nbd_time * 1000 / self.stat_nbd_ops,  # AVG latency (ms)
-            self.stat_nbd_data / (self.stat_nbd_ops * 1000),  # Avg chunk size
-            self.stat_nbd_ops,  # Chunks
-        )
+        if self.stat_rbd_stats:
+            self._detailed_report(self.stat_rbd_stats, 'RBD')
+        if self.stat_nbd_stats:
+            self._detailed_report(self.stat_nbd_stats, 'NBD')
         self.prev_report_time = now
         self._reset_stat()
 
+    @staticmethod
+    def _detailed_report(stats: List[Tuple[int, float, float]], name: str):
+        total_bytes = sum(i[0] for i in stats)
+        total_ops = len(stats)
+        summ_of_time = sum((i[2] - i[1]) for i in stats)
+
+        # Calculate time of REAL transfers
+        stats.sort(key=lambda i: i[1])  # sort by start time
+        current_end = 0
+        transfer_time = 0
+        for (unused, start, end) in stats:
+            if start > current_end:
+                current_end = end
+                transfer_time += end - start
+            elif end > current_end:
+                transfer_time += end - current_end
+                current_end = end
+        log.info(
+            '%s ops for %2.2f sec: %2.2f MB/sec, %2.2f IOPS, avg lat %2.2f msec, avg IO size %2.2f KB, %d IOs.',
+            name,
+            transfer_time,
+            total_bytes / (transfer_time * 1000000),  # RBD speed
+            total_ops / transfer_time,  # RBD IOPS
+            summ_of_time * 1000 / total_ops,  # AVG latency (ms)
+            total_bytes / (total_ops * 1000),  # Avg chunk size
+            total_ops,  # Chunks
+        )
+
     def _reset_stat(self):
-        self.stat_rbd_time = 0
-        self.stat_rbd_data = 0
-        self.stat_rbd_ops = 0
-
-        self.stat_nbd_time = 0
-        self.stat_nbd_data = 0
-        self.stat_nbd_ops = 0
-
         self.stat_completed = 0
         self.stat_total_bytes = 0
+        self.stat_rbd_stats = []
+        self.stat_nbd_stats = []
 
-        self.stat_max_end = None
-        self.stat_min_start = None
-
-    async def _transfer_chunk(self, offset: int, length: int, exists: bool) -> Tuple[int, float, float]:
-        start_time = time.monotonic()
+    async def _transfer_chunk(self, offset: int, length: int, exists: bool) -> \
+            Tuple[int, Optional[Tuple[float, float]], Tuple[float, float]]:
         if exists:
+            time1 = time.monotonic()
             data = await rbd_read(self.loop, self.rbd_image, offset, length)
-            rbd_time = time.monotonic()
-            self.stat_rbd_time += rbd_time - start_time
-            self.stat_rbd_data += length
-            self.stat_rbd_ops += 1
+            time2 = time.monotonic()
             await self.nbd_client.write(offset, data)
-            end_time = time.monotonic()
-            self.stat_nbd_time += end_time - rbd_time
-            self.stat_nbd_data += length
-            self.stat_nbd_ops += 1
+            time3 = time.monotonic()
+            return length, (length, time1, time2), (length, time2, time3)
         else:
+            time2 = time.monotonic()
             await self.nbd_client.write_zeroes(offset, length)
-            end_time = time.monotonic()
-            self.stat_nbd_time += end_time - start_time
-            self.stat_nbd_data += length
-            self.stat_nbd_ops += 1
-        return length, start_time, end_time
+            time3 = time.monotonic()
+            return length, None, (length, time2, time3)
 
     async def _transfer(self, rbd_read_operations: List[Tuple[int, int, bool]], parallel: int):
         log.info('Transferring image with %d parallel stream(s).', parallel)
