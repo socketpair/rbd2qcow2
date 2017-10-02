@@ -31,9 +31,9 @@ async def rbd_read(loop, rbd_image: rbd.Image, offset: int, length: int) -> byte
         """ WARNING! this function run in separate internal librados thread! """
         # loop.call_soon_threadsafe(
         #     log.debug,
-        #     'RBD transfer delay: %2.2f msec. %2.2f MiB.',
+        #     'RBD transfer delay: %2.2f msec. %2.2f MB.',
         #     (time.monotonic() - start) * 1000,
-        #     len(rbd_data) / (1024 * 1024)
+        #     len(rbd_data) / 1000000
         # )
         nonlocal cancelled
         with lock:
@@ -69,54 +69,115 @@ class Transferrer:
             rbd_image: rbd.Image,
             nbd_client: NBDClient
     ):
-        self.completed = 0
-        self.percentage = None
+        self.jobs_completed = 0
         self.loop = loop
         self.total = 0
         self.total_bytes = 0
         self.prev_report_time = None
-        self.prev_report_size = 0
         self.rbd_image = rbd_image
         self.nbd_client = nbd_client
         self._transfers = set()
+        self._reset_stat()
 
     async def _wait_for_transfers(self, return_when: str):
         (done, self._transfers) = await asyncio.wait(self._transfers, return_when=return_when)
         for future in done:  # type: asyncio.Future
             if future.cancelled():
-                raise RuntimeError('Transfer was cancelled.')
+                raise RuntimeError('Transfer cancelled.')
             if future.exception() is not None:
-                raise RuntimeError('Transfer was failed') from future.exception()
-            self.total_bytes += future.result()
-        self.completed += len(done)
-        new_percentage = self.completed * 100 // self.total
-        if new_percentage != self.percentage:
-            now = time.monotonic()
-            if self.prev_report_time is None:
-                speed = 0
-            else:
-                speed = (self.total_bytes - self.prev_report_size) / ((now - self.prev_report_time) * 1024 * 1024)
-            log.info(
-                'Completed: %d%% (%2.2f GiB transferred). %2.2f MiB/sec.',
-                new_percentage,
-                self.total_bytes / (1024 * 1024 * 1024),
-                speed,
-            )
-            self.percentage = new_percentage
-            self.prev_report_time = now
-            self.prev_report_size = self.total_bytes
+                raise RuntimeError('Transfer failed') from future.exception()
+            (bytes_transferred, start, end) = future.result()
+            self.total_bytes += bytes_transferred
+            self.stat_total_bytes += bytes_transferred
+            if self.stat_min_start is None or start < self.stat_min_start:
+                self.stat_min_start = start
+            if self.stat_max_end is None or end > self.stat_max_end:
+                self.stat_max_end = end
+        self.jobs_completed += len(done)
+        self.stat_completed += len(done)
 
-    async def _transfer_chunk(self, offset: int, length: int, exists: bool):
+        percentage = self.jobs_completed * 100 // self.total
+        now = time.monotonic()
+
+        # Do not report too frequently (max once per 5 sec)
+        if (now - self.prev_report_time < 5) and percentage < 100:
+            return
+
+        delta_time = now - self.prev_report_time
+        delta_transfer_time = self.stat_max_end - self.stat_min_start
+
+        log.info(
+            'Completed: %d%%: %2.2f GB, %2.2f MB/sec, %2.2f IOPS, avg lat %2.2f msec, avg IO size %2.2f KB, %d IOs.',
+            percentage,
+            self.total_bytes / 1000000000,
+            self.stat_total_bytes / (delta_time * 1000000),  # Whole speed (MB/sec)
+            self.stat_completed / delta_time,  # WHOLE iops
+            delta_time * 1000 / self.stat_completed,  # AVG latency (ms)
+            self.stat_total_bytes / (self.stat_completed * 1000),  # Avg chunk size (KB)
+            self.stat_completed,  # Chunks
+        )
+
+        log.info(
+            'RBD ops for %2.2f sec: %2.2f MB/sec, %2.2f IOPS, avg lat %2.2f msec, avg IO size %2.2f KB, %d IOs.',
+            delta_transfer_time,
+            self.stat_rbd_data / (delta_transfer_time * 1000000),  # RBD speed
+            self.stat_rbd_ops / delta_transfer_time,  # RBD IOPS
+            self.stat_rbd_time * 1000 / self.stat_rbd_ops,  # AVG latency (ms)
+            self.stat_rbd_data / (self.stat_rbd_ops * 1000),  # Avg chunk size
+            self.stat_rbd_ops,  # Chunks
+        )
+        log.info(
+            'NBD ops for %2.2f sec: %2.2f MB/sec, %2.2f IOPS, avg lat %2.2f msec, avg IO size %2.2f KB, %d IOs.',
+            delta_transfer_time,
+            self.stat_nbd_data / (delta_transfer_time * 1000000),  # RBD speed
+            self.stat_nbd_ops / delta_transfer_time,  # RBD IOPS
+            self.stat_nbd_time * 1000 / self.stat_nbd_ops,  # AVG latency (ms)
+            self.stat_nbd_data / (self.stat_nbd_ops * 1000),  # Avg chunk size
+            self.stat_nbd_ops,  # Chunks
+        )
+        self.prev_report_time = now
+        self._reset_stat()
+
+    def _reset_stat(self):
+        self.stat_rbd_time = 0
+        self.stat_rbd_data = 0
+        self.stat_rbd_ops = 0
+
+        self.stat_nbd_time = 0
+        self.stat_nbd_data = 0
+        self.stat_nbd_ops = 0
+
+        self.stat_completed = 0
+        self.stat_total_bytes = 0
+
+        self.stat_max_end = None
+        self.stat_min_start = None
+
+    async def _transfer_chunk(self, offset: int, length: int, exists: bool) -> Tuple[int, float, float]:
+        start_time = time.monotonic()
         if exists:
             data = await rbd_read(self.loop, self.rbd_image, offset, length)
+            rbd_time = time.monotonic()
+            self.stat_rbd_time += rbd_time - start_time
+            self.stat_rbd_data += length
+            self.stat_rbd_ops += 1
             await self.nbd_client.write(offset, data)
+            end_time = time.monotonic()
+            self.stat_nbd_time += end_time - rbd_time
+            self.stat_nbd_data += length
+            self.stat_nbd_ops += 1
         else:
             await self.nbd_client.write_zeroes(offset, length)
-        return length
+            end_time = time.monotonic()
+            self.stat_nbd_time += end_time - start_time
+            self.stat_nbd_data += length
+            self.stat_nbd_ops += 1
+        return length, start_time, end_time
 
     async def _transfer(self, rbd_read_operations: List[Tuple[int, int, bool]], parallel: int):
         log.info('Transferring image with %d parallel stream(s).', parallel)
         self.total = len(rbd_read_operations)
+        self.prev_report_time = time.monotonic()
         for (offset, length, exists) in rbd_read_operations:
             while len(self._transfers) >= parallel:
                 await self._wait_for_transfers(asyncio.FIRST_COMPLETED)

@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 
 
 def create_qcow2_image(filename: str, size: int, backing_store_filename: str = None, backingstore_format='qcow2'):
-    log.debug('Creating QCOW2 image %s of virtual size %2.2f GiB.', filename, size / (1024 * 1024 * 1024))
+    log.debug('Creating QCOW2 image %s of virtual size %2.2f GB.', filename, size / 1000000000)
     args = ['qemu-img', 'create', '-f', 'qcow2']
     if backing_store_filename is not None:
         # TODO: escape commas
@@ -81,7 +81,7 @@ async def do_transfer(
     with rbd.Image(ioctx, name=rbd_image_name, snapshot=rbd_snap_name, read_only=True) as rbd_image:
         log.info('Getting list of chunks to transfer.')
         size = rbd_image.size()
-        log.info('RBD image size is %2.2f GiB.', size / (1024 * 1024 * 1024))
+        log.info('RBD image size is %2.2f GB.', size / 1000000000)
         rbd_read_operations = []  # type: List[Tuple[int, int, bool]]
         rbd_image.diff_iterate(0, size, base_rbd_snapshot, lambda *args: rbd_read_operations.append(args))
 
@@ -94,16 +94,16 @@ async def do_transfer(
             cnt = len(rbd_read_operations)
             size_zero = sum(i[1] for i in rbd_read_operations if not i[2])
             log.info(
-                'Need to transfer %d chunks: %2.2f GiB of data + %2.2f GiB of zeroes.',
+                'Need to transfer %d chunks: %2.2f GB of data + %2.2f GB of zeroes.',
                 cnt,
-                size_nonzero / (1024 * 1024 * 1024),
-                size_zero / (1024 * 1024 * 1024),
+                size_nonzero / 1000000000,
+                size_zero / 1000000000,
             )
 
         qcow2_directory = os.path.dirname(os.path.realpath(qcow2_name))
         tmp_filename = tempfile.mktemp(prefix='qcow2_', dir=qcow2_directory)
         try:
-            log.info('Creating image %s of virtual size %2.2f GiB.', qcow2_name, size / (1024 * 1024 * 1024))
+            log.info('Creating image %s of virtual size %2.2f GB.', qcow2_name, size / 1000000000)
             create_qcow2_image(tmp_filename, size, backing_store_filename)
 
             if size_nonzero:
