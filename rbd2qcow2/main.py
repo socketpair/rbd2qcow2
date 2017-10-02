@@ -84,6 +84,11 @@ async def do_transfer(
         log.info('RBD image size is %2.2f GiB.', size / (1024 * 1024 * 1024))
         rbd_read_operations = []  # type: List[Tuple[int, int, bool]]
         rbd_image.diff_iterate(0, size, base_rbd_snapshot, lambda *args: rbd_read_operations.append(args))
+
+        if not rbd_read_operations:
+            log.warning('Image %s was not changed since last backup. Skipping any transfers.', rbd_image_name)
+            return
+
         size_nonzero = sum(i[1] for i in rbd_read_operations if i[2])
         if log.isEnabledFor(logging.INFO):
             cnt = len(rbd_read_operations)
