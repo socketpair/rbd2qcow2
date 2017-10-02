@@ -50,6 +50,24 @@ def create_qcow2_image(filename: str, size: int, backing_store_filename: str = N
     subprocess.check_call(args)
 
 
+def do_fallocate(filename: str, size: int):
+    log.debug('Fallocating %s for size %d.', filename, size)
+    fd = os.open(filename, os.O_RDWR)
+    try:
+        # os.posix_fallocate:
+        # 1. does not support FALLOC_FL_KEEP_SIZE
+        # 2. has bug: http://bugs.python.org/issue31106
+        # 3. will emulate instead of raising of error if operation is not
+        #    supported (see libc docs on posix_fallocate)
+        fallocate(fd, FALLOC_FL_KEEP_SIZE, 0, size)
+    except OSError as err:
+        if err.errno != errno.EOPNOTSUPP:
+            raise
+        log.warning('Fallocate is not supported on your FS. Skipped.')
+    finally:
+        os.close(fd)
+
+
 async def do_transfer(
         loop,
         ioctx,
@@ -82,19 +100,9 @@ async def do_transfer(
         try:
             log.info('Creating image %s of virtual size %2.2f GiB.', qcow2_name, size / (1024 * 1024 * 1024))
             create_qcow2_image(tmp_filename, size, backing_store_filename)
-            log.debug('Fallocating newly-created qcow2 image.')
-            with open(tmp_filename, 'r+b') as fd:
-                try:
-                    # os.posix_fallocate:
-                    # 1. does not support FALLOC_FL_KEEP_SIZE
-                    # 2. has bug: http://bugs.python.org/issue31106
-                    # 3. will emulate instead of raising of error if operation is not
-                    #    supported (see libc docs on posix_fallocate)
-                    fallocate(fd.fileno(), FALLOC_FL_KEEP_SIZE, 0, size_nonzero)
-                except OSError as err:
-                    if err.errno != errno.EOPNOTSUPP:
-                        raise
-                    log.warning('Fallocate is not supported on your FS. Skipped.')
+
+            if size_nonzero:
+                do_fallocate(tmp_filename, size_nonzero)
 
             nbd_client = await open_image(tmp_filename)
             try:
