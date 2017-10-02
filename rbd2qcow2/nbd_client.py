@@ -171,7 +171,7 @@ class NBDClient:
             await self.write(offset, b'\x00' * length)
             return
 
-        log.debug('Writing %d zeroes at offset %d.', length, offset)
+        # log.debug('Writing %d zeroes at offset %d.', length, offset)
         await self._enqueue_command(NBD_CMD_WRITE_ZEROES, offset, length=length)
 
     async def read(self, offset: int, length: int) -> bytes:

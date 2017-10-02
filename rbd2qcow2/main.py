@@ -309,6 +309,7 @@ def main():
 
     logging.basicConfig(level=logging.DEBUG if options.verbose else logging.INFO)
 
+    log.info('Starting backup process.')
     loop = asyncio.get_event_loop()
     try:
         run_async_task(loop, async_main(loop))
@@ -317,6 +318,7 @@ def main():
             log.debug('BUG: Incomplete tasks: %r.', t)
     finally:
         loop.close()
+        log.info('Backup complete.')
 
 
 if __name__ == '__main__':

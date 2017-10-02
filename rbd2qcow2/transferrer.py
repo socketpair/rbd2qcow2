@@ -126,7 +126,7 @@ class Transferrer:
 
         log.debug('Iteration loop complete.')
         if self._transfers:
-            log.info('Waiting for the tail transfers.')
+            log.debug('Waiting for the tail transfers.')
             await self._wait_for_transfers(asyncio.ALL_COMPLETED)
 
         log.debug('Flushing QCOW2 image')
