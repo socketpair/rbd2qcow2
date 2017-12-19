@@ -159,33 +159,54 @@ def get_latest_backup(xxx: str, image_name: str) -> int:
     return ts
 
 
+def check_skip_backup(rbd_image: rbd.Image) -> bool:
+    backup_skip_key = 'backup-skip'
+    if not hasattr(rbd_image, 'metadata_get'):  # for pre-Luminous python bindings.
+        log.debug('Python RBD binding has no metadata_get function, skipping RBD image metadata check.')
+        return False
+
+    try:
+        metaval = rbd_image.metadata_get(backup_skip_key)
+    except (KeyError, AttributeError):  # AttributeError for Luminous <= 12.2.2
+        log.debug('Image does not have metadata key %r.', backup_skip_key)
+        return False
+
+    log.info('Image skipped due to its metadata key %r set to %r.', backup_skip_key, metaval)
+    return True
+
+
 async def do_backup(rbd_image_name: str, loop, ioctx):
-    xxx = os.path.join(options.directory, rbd_image_name)
-    if not os.path.isdir(xxx):
-        log.debug('Creating directory %s.', xxx)
-        os.makedirs(xxx)
+    # TODO: specify backup period in image-meta.
     curr_ts = int(time.time())
-    latest_ts = get_latest_backup(xxx, rbd_image_name)
-    if latest_ts == 0:
-        log.info('Did not found previous backup for image %s.', rbd_image_name)
-        empty_image_path = os.path.join(xxx, 'empty.qcow2')
-        if not os.path.exists(empty_image_path):
-            log.info('Creating empty base qcow2 image.')
-            create_qcow2_image(empty_image_path, 1024 * 1024)
-        backing_store_filename = 'empty.qcow2'
-        rbd_base_snapshot = None
-    else:
-        if latest_ts > curr_ts:
-            raise RuntimeError('Detected wrong clocks.')
-        backing_store_filename = '{}@{}.qcow2'.format(rbd_image_name, latest_ts)
-        rbd_base_snapshot = str(latest_ts)
-    qcow2_name = os.path.join(xxx, '{}@{}.qcow2'.format(rbd_image_name, curr_ts))
     rbd_new_snapshot_name = str(curr_ts)
 
-    log.info('Creating RBD snapshot %s for image %s.', rbd_new_snapshot_name, rbd_image_name)
     with rbd.Image(ioctx, rbd_image_name) as rbd_image:
+        if check_skip_backup(rbd_image):
+            log.info('Image %r skipped.', rbd_image_name)
+            return
+        log.info('Creating RBD snapshot %s for image %s.', rbd_new_snapshot_name, rbd_image_name)
         rbd_image.create_snap(rbd_new_snapshot_name)
+
     try:
+        xxx = os.path.join(options.directory, rbd_image_name)
+        if not os.path.isdir(xxx):
+            log.debug('Creating directory %s.', xxx)
+            os.makedirs(xxx)
+        latest_ts = get_latest_backup(xxx, rbd_image_name)
+        if latest_ts == 0:
+            log.info('Did not found previous backup for image %s.', rbd_image_name)
+            empty_image_path = os.path.join(xxx, 'empty.qcow2')
+            if not os.path.exists(empty_image_path):
+                log.info('Creating empty base qcow2 image.')
+                create_qcow2_image(empty_image_path, 1024 * 1024)
+            backing_store_filename = 'empty.qcow2'
+            rbd_base_snapshot = None
+        else:
+            if latest_ts > curr_ts:
+                raise RuntimeError('Detected wrong clocks.')
+            backing_store_filename = '{}@{}.qcow2'.format(rbd_image_name, latest_ts)
+            rbd_base_snapshot = str(latest_ts)
+        qcow2_name = os.path.join(xxx, '{}@{}.qcow2'.format(rbd_image_name, curr_ts))
         await do_transfer(
             loop,
             ioctx,
@@ -299,7 +320,7 @@ def main():
         'directory',
         metavar='DEST_DIR',
         type=str,
-        help='Path to a directory where backups shoul be placed.'
+        help='Path to a directory where backups should be placed.'
     )
 
     parser.add_argument(
@@ -307,7 +328,7 @@ def main():
         metavar='IMAGE_NAME',
         type=str,
         nargs='*',
-        help='An image name to backup. Backup all images if no image is specified.',
+        help='An image name to backup. Backup all images if no image specified.',
     )
 
     options = parser.parse_args()
