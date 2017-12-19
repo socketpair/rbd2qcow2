@@ -74,6 +74,6 @@ Note:
    same target directory. It will possibly corrupt logic.
 
 8. This script is used in production ;)
-9. Patches, suggestions, questions, feature requests are welkom.
-10. This tool should work on CEPH version Jevel and upper.
+9. Patches, suggestions, questions, feature requests are welcome.
+10. This tool should work on CEPH versions Jewel and upper.
 

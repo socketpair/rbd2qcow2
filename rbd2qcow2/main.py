@@ -159,7 +159,7 @@ def get_latest_backup(xxx: str, image_name: str) -> int:
     return ts
 
 
-def check_skip_backup(rbd_image: rbd.Image) -> bool:
+def check_skip_backup(rbd_image) -> bool:
     backup_skip_key = 'backup-skip'
     if not hasattr(rbd_image, 'metadata_get'):  # for pre-Luminous python bindings.
         log.debug('Python RBD binding has no metadata_get function, skipping RBD image metadata check.')

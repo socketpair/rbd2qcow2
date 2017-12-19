@@ -10,12 +10,16 @@ import rbd
 from rbd2qcow2.nbd_client import NBDClient
 
 # LIBRADOS_OP_FLAG_FADVISE_RANDOM ? SEQUENTAL ? NOTHING ?
-RBD_FLAGS = rados.LIBRADOS_OP_FLAG_FADVISE_NOCACHE | rados.LIBRADOS_OP_FLAG_FADVISE_SEQUENTIAL
+if hasattr(rados, 'LIBRADOS_OP_FLAG_FADVISE_NOCACHE'):
+    RBD_FLAGS = rados.LIBRADOS_OP_FLAG_FADVISE_NOCACHE | rados.LIBRADOS_OP_FLAG_FADVISE_SEQUENTIAL
+else:
+    # Pre-Kraken (i.w. Jewel) support.
+    RBD_FLAGS = 0
 
 log = logging.getLogger(__name__)
 
 
-async def rbd_read(loop, rbd_image: rbd.Image, offset: int, length: int) -> bytes:
+async def rbd_read(loop, rbd_image, offset: int, length: int) -> bytes:
     fut = asyncio.Future()
 
     # aio_read completion callback will fire in separate thread
@@ -66,7 +70,7 @@ class Transferrer:
     def __init__(
             self,
             loop: asyncio.AbstractEventLoop,
-            rbd_image: rbd.Image,
+            rbd_image,
             nbd_client: NBDClient
     ):
         self.jobs_completed = 0
