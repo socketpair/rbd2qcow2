@@ -85,38 +85,44 @@ async def do_transfer(
         rbd_read_operations = []  # type: List[Tuple[int, int, bool]]
         rbd_image.diff_iterate(0, size, base_rbd_snapshot, lambda *args: rbd_read_operations.append(args))
 
-        if not rbd_read_operations:
+        if rbd_read_operations:
+            size_nonzero = sum(i[1] for i in rbd_read_operations if i[2])
+            if log.isEnabledFor(logging.INFO):
+                cnt = len(rbd_read_operations)
+                size_zero = sum(i[1] for i in rbd_read_operations if not i[2])
+                log.info(
+                    'Need to transfer %d chunks: %2.2f GB of data + %2.2f GB of zeroes.',
+                    cnt,
+                    size_nonzero / 1000000000,
+                    size_zero / 1000000000,
+                )
+        else:
+            size_nonzero = 0
             log.warning('Image %s was not changed since last backup. Skipping any transfers.', rbd_image_name)
-            return
 
-        size_nonzero = sum(i[1] for i in rbd_read_operations if i[2])
-        if log.isEnabledFor(logging.INFO):
-            cnt = len(rbd_read_operations)
-            size_zero = sum(i[1] for i in rbd_read_operations if not i[2])
-            log.info(
-                'Need to transfer %d chunks: %2.2f GB of data + %2.2f GB of zeroes.',
-                cnt,
-                size_nonzero / 1000000000,
-                size_zero / 1000000000,
-            )
 
         qcow2_directory = os.path.dirname(os.path.realpath(qcow2_name))
         tmp_filename = tempfile.mktemp(prefix='qcow2_', dir=qcow2_directory)
         try:
             log.info('Creating image %s of virtual size %2.2f GB.', qcow2_name, size / 1000000000)
             create_qcow2_image(tmp_filename, size, backing_store_filename)
+            if rbd_read_operations:
+                if size_nonzero:
+                    do_fallocate(tmp_filename, size_nonzero)
 
-            if size_nonzero:
-                do_fallocate(tmp_filename, size_nonzero)
-
-            nbd_client = await open_image(tmp_filename)
-            try:
-                transferrer = Transferrer(loop, rbd_image, nbd_client)
-                await transferrer.transfer(rbd_read_operations, options.parallel)
-            except Exception as e:
-                log.error('Aborting NBD due to transfer error: %r.', e)
-                await nbd_client.abort()
-                raise
+                nbd_client = await open_image(tmp_filename)
+                try:
+                    transferrer = Transferrer(loop, rbd_image, nbd_client)
+                    await transferrer.transfer(rbd_read_operations, options.parallel)
+                except Exception as e:
+                    log.error('Aborting NBD due to transfer error: %r.', e)
+                    await nbd_client.abort()
+                    raise
+                else:
+                    log.debug('Terminating NBD connection.')
+                    await nbd_client.quit()  # TODO: CancelledErrorwhile quitting should be trapped with nbd_client.abort()
+            else:
+                log.info('Image was not changed, skipping any transfers.')
 
             log.debug('Fsyncing %s.', tmp_filename)
             # workaround for opening image as unsafe
@@ -132,8 +138,6 @@ async def do_transfer(
                 os.fsync(fd)
             finally:
                 os.close(fd)
-            log.debug('Terminating NBD connection.')
-            await nbd_client.quit()  # TODO: CancelledError should be trapped with nbd_client.abort()
         except Exception as e:
             log.debug('Unlinking temporary image %r due to error: %r', tmp_filename, e)
             try:
