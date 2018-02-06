@@ -36,7 +36,7 @@ The main features of such way of storing snapshot diffs:
    store zeroes in RBD you should enable DISCARD in qemu. Configure discard
    alignment in qemu correct to match RBD chunk size (i.e. 4MB by default)
    and use `virtio-scsi` or `ide` interface (and not just `virtio`) for disks.
-   Also, you need to set up `fstrim -v -all` by cron (or equivalent) in your VM.
+   Also, you need to set up `fstrim -v -a` by cron (or equivalent) in your VM.
    Do not add `discard` option while mounting FS. This is inefficient actually.
    Recent Windows versions already discard zeroes by default. If everything
    done right, zeroes (i.e. trash typically from removed files) will not be
