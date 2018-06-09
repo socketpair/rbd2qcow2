@@ -31,7 +31,7 @@ setup(
         ],
     },
     requires=[
-        'raods',
+        'rados',
         'rbd',
     ],
     test_suite='nose.collector',
