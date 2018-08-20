@@ -147,9 +147,9 @@ async def do_transfer(
             raise
 
 
-def get_latest_backup(xxx: str, image_name: str) -> int:
+def get_latest_backup(xxx: str, image_name: str)->dict:
     log.debug('Searching for previous images in backup dir.')
-    ts = 0
+    ret = dict()
     for filename in os.listdir(xxx):
         mtch = re.fullmatch(r'([^@]+)@([0-9]+)\.qcow2', filename)
         if mtch is None:
@@ -157,10 +157,8 @@ def get_latest_backup(xxx: str, image_name: str) -> int:
         if mtch.group(1) != image_name:
             log.warning('Unexpected filename %r in dir %r.', filename, xxx)
             continue
-        timestamp = int(mtch.group(2))
-        if timestamp > ts:
-            ts = timestamp
-    return ts
+        ret[int(mtch.group(2))] = filename        
+    return ret
 
 
 def check_skip_backup(rbd_image) -> bool:
@@ -196,7 +194,14 @@ async def do_backup(rbd_image_name: str, loop, ioctx):
         if not os.path.isdir(xxx):
             log.debug('Creating directory %s.', xxx)
             os.makedirs(xxx)
-        latest_ts = get_latest_backup(xxx, rbd_image_name)
+        itms = get_latest_backup(xxx, rbd_image_name)
+        cnt=len(itms)
+        srt=sorted(itms)
+        latest_ts=srt.last()
+        if cnt >=4:
+            args = ['qemu-img', 'rebase', '-b',os.path.join(xxx, itms[srt[1]]),os.path.join(xxx, itms[srt[3]]) ];        
+            subprocess.check_call(args)
+            os.remove(os.path.join(xxx,itms[srt[2]]))
         if latest_ts == 0:
             log.info('Did not found previous backup for image %s.', rbd_image_name)
             empty_image_path = os.path.join(xxx, 'empty.qcow2')
