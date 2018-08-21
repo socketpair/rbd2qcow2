@@ -197,7 +197,7 @@ async def do_backup(rbd_image_name: str, loop, ioctx):
         itms = get_latest_backup(xxx, rbd_image_name)
         cnt=len(itms)
         srt=sorted(itms)
-        latest_ts=srt.last()
+        latest_ts=srt[-1]
         if cnt >=4:
             args = ['qemu-img', 'rebase', '-b',os.path.join(xxx, itms[srt[1]]),os.path.join(xxx, itms[srt[3]]) ];        
             subprocess.check_call(args)
