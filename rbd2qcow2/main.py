@@ -130,7 +130,7 @@ async def do_transfer(
                 os.fsync(xxx.fileno())
             log.debug('Fsyncing complete.')
 
-            os.chmod(tmp_filename, 0o400)
+            #os.chmod(tmp_filename, 0o400)
             os.rename(tmp_filename, qcow2_name)
             # Safe rename
             fd = os.open(qcow2_directory, os.O_DIRECTORY | os.O_RDONLY)
@@ -198,10 +198,13 @@ async def do_backup(rbd_image_name: str, loop, ioctx):
         cnt=len(itms)
         srt=sorted(itms)
         latest_ts=srt[-1]
+        print(srt)
+        print(latest_ts)
         if cnt >=4:
-            args = ['qemu-img', 'rebase', '-b',os.path.join(xxx, itms[srt[1]]),os.path.join(xxx, itms[srt[3]]) ];        
+            args = ['qemu-img', 'rebase', '-b',os.path.join(xxx, itms[srt[1]]),os.path.join(xxx, itms[srt[3]]) ];
+            print(args);
             subprocess.check_call(args)
-            os.remove(os.path.join(xxx,itms[srt[2]]))
+        
         if latest_ts == 0:
             log.info('Did not found previous backup for image %s.', rbd_image_name)
             empty_image_path = os.path.join(xxx, 'empty.qcow2')
@@ -225,6 +228,7 @@ async def do_backup(rbd_image_name: str, loop, ioctx):
             qcow2_name,
             backing_store_filename,
         )
+        os.remove(os.path.join(xxx,itms[srt[2]]))
     except Exception as e:
         log.info('Removing RBD snapshot %s@%s due to error %r.', rbd_image_name, rbd_new_snapshot_name,
                  e)
