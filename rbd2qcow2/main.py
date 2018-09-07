@@ -199,9 +199,16 @@ async def do_backup(rbd_image_name: str, loop, ioctx):
         srt=sorted(itms)
         latest_ts=srt[-1]
         if cnt >=options.bk_count:
-            args = ['qemu-img', 'rebase', '-b',os.path.join(xxx, itms[srt[1]]),os.path.join(xxx, itms[srt[3]]) ];
+            args = ['qemu-img', 
+            'rebase', 
+            '-b',
+            os.path.join(xxx, itms[srt[1]]),
+            os.path.join(xxx, itms[srt[options.bk_count-1]])
+            ];
             subprocess.check_call(args)
-            os.remove(os.path.join(xxx,itms[srt[2]]))
+            for idx in range(2, options.bk_count-2):
+                print(os.path.join(xxx,itms[srt[idx]]))
+                os.remove(os.path.join(xxx,itms[srt[idx]]))
         if latest_ts == 0:
             log.info('Did not found previous backup for image %s.', rbd_image_name)
             empty_image_path = os.path.join(xxx, 'empty.qcow2')
