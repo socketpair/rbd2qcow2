@@ -197,7 +197,10 @@ async def do_backup(rbd_image_name: str, loop, ioctx):
         itms = get_latest_backup(xxx, rbd_image_name)
         cnt=len(itms)
         srt=sorted(itms)
-        latest_ts=srt[-1]
+        if cnt>0:            
+            latest_ts=srt[-1]
+        else:
+            latest_ts=0
         if cnt >=options.bk_count:
             args = ['qemu-img', 
             'rebase', 
