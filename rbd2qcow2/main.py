@@ -198,13 +198,10 @@ async def do_backup(rbd_image_name: str, loop, ioctx):
         cnt=len(itms)
         srt=sorted(itms)
         latest_ts=srt[-1]
-        print(srt)
-        print(latest_ts)
-        if cnt >=4:
+        if cnt >=options.bk_count:
             args = ['qemu-img', 'rebase', '-b',os.path.join(xxx, itms[srt[1]]),os.path.join(xxx, itms[srt[3]]) ];
-            print(args);
             subprocess.check_call(args)
-        
+            os.remove(os.path.join(xxx,itms[srt[2]]))
         if latest_ts == 0:
             log.info('Did not found previous backup for image %s.', rbd_image_name)
             empty_image_path = os.path.join(xxx, 'empty.qcow2')
@@ -228,7 +225,7 @@ async def do_backup(rbd_image_name: str, loop, ioctx):
             qcow2_name,
             backing_store_filename,
         )
-        os.remove(os.path.join(xxx,itms[srt[2]]))
+       
     except Exception as e:
         log.info('Removing RBD snapshot %s@%s due to error %r.', rbd_image_name, rbd_new_snapshot_name,
                  e)
@@ -337,6 +334,14 @@ def main():
     )
 
     parser.add_argument(
+        '--bk_count',
+        metavar='BK_COUNT',
+        type=int,
+        help='Count of backups to store.'
+        default=4
+    )
+
+    parser.add_argument(
         'images',
         metavar='IMAGE_NAME',
         type=str,
@@ -348,6 +353,9 @@ def main():
     if not (1 <= options.parallel <= 100):
         raise ValueError('Wrong parallel count.')
 
+    if not (options.bk_count >= 4):
+        raise ValueError('Wrong backups count. Minimum is 4.')
+        
     logging.basicConfig(level=logging.DEBUG if options.verbose else logging.INFO)
 
     log.info('Starting backup process.')
