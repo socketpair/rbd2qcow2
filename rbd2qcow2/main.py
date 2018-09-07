@@ -337,7 +337,7 @@ def main():
         '--bk_count',
         metavar='BK_COUNT',
         type=int,
-        help='Count of backups to store.'
+        help='Count of backups to store.', 
         default=4
     )
 
