@@ -201,16 +201,17 @@ async def do_backup(rbd_image_name: str, loop, ioctx):
             latest_ts=srt[-1]
         else:
             latest_ts=0
-        if cnt >=options.bk_count:
+        if cnt >= options.bk_count:
+            removingCount = 1 + cnt - options.bk_count;
             args = ['qemu-img', 
             'rebase', 
             '-b',
             os.path.join(xxx, itms[srt[1]]),
-            os.path.join(xxx, itms[srt[options.bk_count-1]])
+            os.path.join(xxx, itms[srt[removingCount+2]])
             ];
             print(args)
             subprocess.check_call(args)
-            for idx in range(2, options.bk_count-2):
+            for idx in range(2, removingCount+2):
                 print(os.path.join(xxx,itms[srt[idx]]))
                 os.remove(os.path.join(xxx,itms[srt[idx]]))
         if latest_ts == 0:
