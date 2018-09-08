@@ -208,6 +208,7 @@ async def do_backup(rbd_image_name: str, loop, ioctx):
             os.path.join(xxx, itms[srt[1]]),
             os.path.join(xxx, itms[srt[options.bk_count-1]])
             ];
+            print(args)
             subprocess.check_call(args)
             for idx in range(2, options.bk_count-2):
                 print(os.path.join(xxx,itms[srt[idx]]))
