@@ -13,6 +13,7 @@ from typing import Tuple, List, Optional
 
 import rados
 import rbd
+import sys
 
 from rbd2qcow2.libc_wrappers import fallocate, FALLOC_FL_KEEP_SIZE
 from rbd2qcow2.nbd_client import open_image
@@ -130,7 +131,7 @@ async def do_transfer(
                 os.fsync(xxx.fileno())
             log.debug('Fsyncing complete.')
 
-            os.chmod(tmp_filename, 0o400)
+            #os.chmod(tmp_filename, 0o400)
             os.rename(tmp_filename, qcow2_name)
             # Safe rename
             fd = os.open(qcow2_directory, os.O_DIRECTORY | os.O_RDONLY)
@@ -147,9 +148,9 @@ async def do_transfer(
             raise
 
 
-def get_latest_backup(xxx: str, image_name: str) -> int:
+def get_latest_backup(xxx: str, image_name: str)->dict:
     log.debug('Searching for previous images in backup dir.')
-    ts = 0
+    ret = dict()
     for filename in os.listdir(xxx):
         mtch = re.fullmatch(r'([^@]+)@([0-9]+)\.qcow2', filename)
         if mtch is None:
@@ -157,10 +158,8 @@ def get_latest_backup(xxx: str, image_name: str) -> int:
         if mtch.group(1) != image_name:
             log.warning('Unexpected filename %r in dir %r.', filename, xxx)
             continue
-        timestamp = int(mtch.group(2))
-        if timestamp > ts:
-            ts = timestamp
-    return ts
+        ret[int(mtch.group(2))] = filename        
+    return ret
 
 
 def check_skip_backup(rbd_image) -> bool:
@@ -196,7 +195,26 @@ async def do_backup(rbd_image_name: str, loop, ioctx):
         if not os.path.isdir(xxx):
             log.debug('Creating directory %s.', xxx)
             os.makedirs(xxx)
-        latest_ts = get_latest_backup(xxx, rbd_image_name)
+        itms = get_latest_backup(xxx, rbd_image_name)
+        cnt=len(itms)
+        srt=sorted(itms)
+        if cnt>0:            
+            latest_ts=srt[-1]
+        else:
+            latest_ts=0
+        if cnt >= options.bk_count:
+            removingCount = 1 + cnt - options.bk_count;
+            args = ['qemu-img', 
+            'rebase', 
+            '-b',
+            os.path.join(xxx, itms[srt[1]]),
+            os.path.join(xxx, itms[srt[removingCount+2]])
+            ];
+            log.info('Rebasing image %s.', args)
+            subprocess.check_call(args)
+            for idx in range(2, removingCount+2):
+                log.info('Removing old image %s.',os.path.join(xxx,itms[srt[idx]]))
+                os.remove(os.path.join(xxx,itms[srt[idx]]))
         if latest_ts == 0:
             log.info('Did not found previous backup for image %s.', rbd_image_name)
             empty_image_path = os.path.join(xxx, 'empty.qcow2')
@@ -220,6 +238,7 @@ async def do_backup(rbd_image_name: str, loop, ioctx):
             qcow2_name,
             backing_store_filename,
         )
+       
     except Exception as e:
         log.info('Removing RBD snapshot %s@%s due to error %r.', rbd_image_name, rbd_new_snapshot_name,
                  e)
@@ -328,6 +347,14 @@ def main():
     )
 
     parser.add_argument(
+        '--bk_count',
+        metavar='BK_COUNT',
+        type=int,
+        help='Count of backups to store.', 
+        default=sys.maxsize
+    )
+
+    parser.add_argument(
         'images',
         metavar='IMAGE_NAME',
         type=str,
@@ -339,6 +366,9 @@ def main():
     if not (1 <= options.parallel <= 100):
         raise ValueError('Wrong parallel count.')
 
+    if not (options.bk_count >= 4):
+        raise ValueError('Wrong backups count. Minimum is 4.')
+        
     logging.basicConfig(level=logging.DEBUG if options.verbose else logging.INFO)
 
     log.info('Starting backup process.')
