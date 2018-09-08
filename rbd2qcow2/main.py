@@ -13,6 +13,7 @@ from typing import Tuple, List, Optional
 
 import rados
 import rbd
+import sys
 
 from rbd2qcow2.libc_wrappers import fallocate, FALLOC_FL_KEEP_SIZE
 from rbd2qcow2.nbd_client import open_image
@@ -350,7 +351,7 @@ def main():
         metavar='BK_COUNT',
         type=int,
         help='Count of backups to store.', 
-        default=4
+        default=sys.maxsize
     )
 
     parser.add_argument(
