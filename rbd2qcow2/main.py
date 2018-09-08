@@ -209,10 +209,10 @@ async def do_backup(rbd_image_name: str, loop, ioctx):
             os.path.join(xxx, itms[srt[1]]),
             os.path.join(xxx, itms[srt[removingCount+2]])
             ];
-            print(args)
+            log.info('Rebasing image %s.', args)
             subprocess.check_call(args)
             for idx in range(2, removingCount+2):
-                print(os.path.join(xxx,itms[srt[idx]]))
+                log.info('Removing old image %s.',os.path.join(xxx,itms[srt[idx]]))
                 os.remove(os.path.join(xxx,itms[srt[idx]]))
         if latest_ts == 0:
             log.info('Did not found previous backup for image %s.', rbd_image_name)
