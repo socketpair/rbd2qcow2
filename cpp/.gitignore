@@ -1,0 +1,5 @@
+*.ii
+*.[oais]
+main
+a.out
+*.bc
