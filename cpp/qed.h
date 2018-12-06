@@ -6,8 +6,8 @@ class L2Map_mmap;
 
 class QEDImage {
 public:
-  QEDImage(const char *filename, uint64_t size);
-  QEDImage(const char *filename);
+  QEDImage(const char *filename, uint64_t size, const char *backing_store = NULL);
+  QEDImage(const char *filename, bool readonly = false);
   ~QEDImage();
 
   void print() const;
@@ -22,10 +22,11 @@ public:
 
 private:
   void initialize(const char *filename);
-  void create(const char *filename, uint64_t size);
+  void create(const char *filename, uint64_t size, const char *backing_store);
   enum Opmode { Read, Write, AllocMaps, AllocData, WriteZeroes };
   uint64_t allocate(uint64_t count);
   void io(uint64_t logical_offset, size_t count, uint8_t *dst, const uint8_t *src, Opmode mode);
+  void read_bstore(uint64_t offset, size_t count, uint8_t *dst);
   int fd;
   std::unique_ptr<L2Map_mmap> l1;
   std::unique_ptr<Layercache<L2Map_mmap>> layer_cache;
@@ -37,4 +38,6 @@ private:
   uint64_t table_mask;
   uint64_t file_size;
   uint64_t logical_image_size;
+  const bool readonly;
+  std::unique_ptr<QEDImage> bstore;
 };

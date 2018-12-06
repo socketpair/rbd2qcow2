@@ -1,8 +1,8 @@
 # -fsanitize=undefined
-CXXFLAGS += -std=c++11 -O3 -Wall -Wextra -pthread
+CXXFLAGS += -std=c++17 --save-temps -O3 -Wall -Wextra -pthread
 LDFLAGS += -pthread -lrbd -g -lrados -lstdc++
 
-# CC=clang-6.0
+#CC=clang-6.0
 
 all: test main
 

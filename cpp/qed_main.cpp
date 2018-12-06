@@ -10,7 +10,9 @@ using namespace ::std;
 // Formatting 'qwe.qed', fmt=qed size=2147483648 cluster_size=65536
 int main() {
   try {
-    QEDImage qwe("qwe.qed", 2llu * 1024 * 1024 * 1024);
+    QEDImage qwe("yyy.qed", 2ull * 1024 * 1024 * 1024, "xxx.qed");
+    qwe.write(1, 1, "*");
+    return 0;
 
     random_device r;
     default_random_engine e1(r());

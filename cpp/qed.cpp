@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstring> // memset
 #include <fcntl.h> // posix_fallocate
 #include <iostream>
@@ -57,6 +58,8 @@ typedef struct __attribute__((packed)) {
 
 #define QED_F_BACKING_FILE 1
 #define QED_F_NEED_CHECK 2
+
+// i.e. RAW ?
 #define QED_F_BACKING_FORMAT_NO_PROBE 4
 
 // TODO: validate indexes (upper value) as table_size_in_bytes / sizeof(uint64_t)
@@ -206,6 +209,18 @@ void QEDImage::print() const {
   uint64_t i;
 
   cout << "file size = " << s.st_size << " (" << s.st_size / clustersize << ")" << endl;
+
+  if (le64_to_cpu(h.features) & QED_F_BACKING_FILE) {
+    uint32_t fs = le32_to_cpu(h.backing_filename_size);
+    unique_ptr<char[]> fn(new char[fs + 1]);
+    if (::pread(fd, fn.get(), fs, le32_to_cpu(h.backing_filename_offset)) != (ssize_t)fs)
+      throw "Erro reading backing_filename";
+    fn[fs] = 0;
+    cout << "backing file: " << fn.get() << endl;
+  } else {
+    cout << "No backing store file." << endl;
+  }
+
   vector<bool> usedc(file_size / clustersize, false);
 
   for (i = 0; i < le32_to_cpu(h.header_size); i++) {
@@ -254,7 +269,7 @@ void QEDImage::print() const {
   }
 }
 
-void QEDImage::create(const char *filename, uint64_t size) {
+void QEDImage::create(const char *filename, uint64_t size, const char *backing_stor) {
 
   // TODO: check upper limit
   if (!size || size % 512)
@@ -282,6 +297,25 @@ void QEDImage::create(const char *filename, uint64_t size) {
     h.header_size = cpu_to_le32(header_size);
     h.l1_table_offset = cpu_to_le64(header_size * cluster_size);
 
+    uint64_t features = 0;
+    if (backing_stor) {
+      size_t l = strlen(backing_stor);
+      if (!l)
+        throw "Empty string as backing stor filename ?";
+
+      // We support only header size=1 cluster for now
+      if (l > 0xFFFFFFFF || l > cluster_size - sizeof(h))
+        throw "Too big backing_stor filename";
+
+      features |= QED_F_BACKING_FILE;
+      h.backing_filename_offset = cpu_to_le32(sizeof(h));
+      h.backing_filename_size = cpu_to_le32(l);
+
+      if ((uint64_t)::pwrite(fd, backing_stor, l, sizeof(h)) != l)
+        throw "Failed to write backing_stor filename";
+    }
+
+    h.features = cpu_to_le64(features);
     if ((uint64_t)::pwrite(fd, &h, sizeof(h), 0) != sizeof(h))
       throw "Failed to write header file";
 
@@ -295,7 +329,7 @@ void QEDImage::create(const char *filename, uint64_t size) {
 }
 
 void QEDImage::initialize(const char *filename) {
-  fd = ::open(filename, O_RDWR | O_CLOEXEC);
+  fd = ::open(filename, (readonly ? O_RDONLY : O_RDWR) | O_CLOEXEC);
   if (fd == -1)
     throw "Fail to open image file";
   try {
@@ -346,9 +380,19 @@ void QEDImage::initialize(const char *filename) {
     if (l1_table_offset + table_size_in_bytes > file_size)
       throw "File too short";
 
-    l1.reset(new L2Map_mmap(fd, l1_table_offset, cluster_mask, table_size_in_bytes, false /* readonly */));
+    l1.reset(new L2Map_mmap(fd, l1_table_offset, cluster_mask, table_size_in_bytes, readonly));
     layer_cache.reset(
-        new remove_reference<decltype(*layer_cache)>::type(fd, cluster_mask, table_size_in_bytes, false /* readonly*/));
+        new remove_reference<decltype(*layer_cache)>::type(fd, cluster_mask, table_size_in_bytes, readonly));
+
+    if (le64_to_cpu(h.features) & QED_F_BACKING_FILE) {
+      uint32_t fs = le32_to_cpu(h.backing_filename_size);
+      unique_ptr<char[]> fn(new char[fs + 1]);
+      if (::pread(fd, fn.get(), fs, le32_to_cpu(h.backing_filename_offset)) != (ssize_t)fs)
+        throw "Erro reading backing_filename";
+      fn[fs] = 0;
+      bstore.reset(new QEDImage(fn.get(), true));
+    }
+
   } catch (...) {
     ::close(fd);
     throw;
@@ -356,22 +400,26 @@ void QEDImage::initialize(const char *filename) {
 }
 
 void QEDImage::fdatasync() const {
+  if (readonly)
+    return;
   if (::fdatasync(fd) == -1)
     throw "fdatasync error";
 }
 
-QEDImage::QEDImage(const char *filename, uint64_t size) {
-  create(filename, size);
+QEDImage::QEDImage(const char *filename, uint64_t size, const char *backing_store) : readonly(false) {
+  create(filename, size, backing_store);
   initialize(filename);
 }
-QEDImage::QEDImage(const char *filename) { initialize(filename); }
+QEDImage::QEDImage(const char *filename, bool readonly_) : readonly(readonly_) { initialize(filename); }
 
 QEDImage::~QEDImage() {
-  ::fdatasync(fd);
+  fdatasync();
   ::close(fd);
 }
 
 uint64_t QEDImage::allocate(uint64_t count) {
+  if (readonly)
+    throw "Mutate on readonly image";
   const uint64_t ret = file_size;
 #if 1
   if (posix_fallocate(fd, file_size, count))
@@ -386,7 +434,24 @@ uint64_t QEDImage::allocate(uint64_t count) {
   return ret;
 }
 
+void QEDImage::read_bstore(uint64_t offset, size_t count, uint8_t *dst) {
+  if (bstore && count) {
+    const uint64_t lll = bstore->logical_image_size;
+    if (offset < lll) {
+      const uint64_t cnt = min(lll - offset, count);
+      bstore->read(offset, cnt, dst);
+      count -= cnt;
+      // offset+=cnt;
+      dst += cnt;
+    }
+  }
+  if (count)
+    memset(dst, 0, count);
+}
+
 void QEDImage::io(uint64_t logical_offset, size_t count, uint8_t *dst, const uint8_t *src, Opmode mode) {
+  if (readonly && mode != Read)
+    throw "Mutate operation on readonly image";
 
   if (count > logical_image_size || logical_offset > logical_image_size - count)
     throw "Attempt to do IO beyond the end.";
@@ -411,9 +476,12 @@ void QEDImage::io(uint64_t logical_offset, size_t count, uint8_t *dst, const uin
     if (!l2_table_file_offset) {
       if (mode == Read) {
         // cerr << "No L2 table, so reading ZEROES" << endl;
-        memset(dst, 0, incluster_len);
+        read_bstore(logical_offset, incluster_len, dst);
         continue;
       }
+      if (mode == WriteZeroes)
+        continue;
+
       // cerr << "Allocating a new L2 table" << endl;
       l2_table_file_offset = allocate(table_size_in_bytes);
       l1->set_offset(l1_index, l2_table_file_offset);
@@ -432,12 +500,31 @@ void QEDImage::io(uint64_t logical_offset, size_t count, uint8_t *dst, const uin
     if (!data_cluster_offset) {
       if (mode == Read) {
         // cerr << "No cluster in L2 table, so reading ZEROES" << endl;
-        memset(dst, 0, incluster_len);
+        read_bstore(logical_offset, incluster_len, dst);
         continue;
       }
+      if (mode == WriteZeroes)
+        continue;
       // cerr << "Allocating a new data cluster (!)" << endl;
       data_cluster_offset = allocate(cluster_size);
       l2->set_offset(l2_index, data_cluster_offset);
+
+      // read backing store if not full rewrite
+      if (bstore && incluster_len != cluster_size) {
+        uint64_t cluster_start = logical_offset & ~cluster_mask;
+        if (cluster_start < bstore->logical_image_size) {
+          uint8_t *raw_buf = new uint8_t[cluster_size];
+          unique_ptr<uint8_t[]> buf(raw_buf);
+          // TODO: optimize: read less the cluster!
+          read_bstore(cluster_start, cluster_size, raw_buf);
+          ::close(0x1234);
+          ::close(1234);
+          if (any_of(/*execution::par,*/ raw_buf, raw_buf + cluster_size, [](uint8_t v) { return bool(v); })) {
+            if ((uint64_t)::pwrite(fd, buf.get(), cluster_size, data_cluster_offset) != cluster_size)
+              throw "Write error";
+          }
+        }
+      }
     }
 
     if (mode == AllocData) {
