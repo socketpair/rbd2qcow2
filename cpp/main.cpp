@@ -40,53 +40,58 @@ template <typename Func> static auto make_jobs(size_t count, Func fun) -> unique
 }
 
 static void transfer(Image &img, QEDImage &qed, const vector<diffchunk> &chunks) {
+  // TODO: configurable (!)
   const int rbd_streams = 3;
 
-  // TODO: *2 is arbitrary chosen
-  LimitedQ<diffchunk> q1(rbd_streams * 4);
-  LimitedQ<diffchunk> q2(rbd_streams * 4);
+  // TODO: 32 is arbitrary chosen
+  LimitedQ<diffchunk> q_chunks_to_read(32);
+  LimitedQ<diffchunk> q_chunks_to_write(32);
 
-  auto exists_chunks_pusher = async(launch::async, [&q1, &chunks]() {
-    decltype(q1)::Terminator t(q1);
+  auto fill_chunks_to_read = async(launch::async, [&q_chunks_to_read, &chunks]() {
+    decltype(q_chunks_to_read)::Terminator t(q_chunks_to_read);
     for (const auto &chunk : chunks)
       if (chunk.exists)
-        q1.push_front(chunk);
+        q_chunks_to_read.push_front(chunk);
   });
 
-  auto zero_chunks_pusher = async(launch::async, [&q2, &chunks]() {
-    for (const auto &chunk : chunks)
-      if (!chunk.exists)
-        q2.push_front(chunk);
-  });
+  auto rbd_reader = async(launch::async, [&q_chunks_to_read, &q_chunks_to_write, &img, &chunks]() {
+    decltype(q_chunks_to_write)::Terminator t(q_chunks_to_write);
 
-  auto rbd_reader = async(launch::async, [&q1, &q2, &img]() {
-    decltype(q2)::Terminator t(q2);
-    auto handles2 = make_jobs(rbd_streams, [&q1, &q2, &img]() {
+    auto zero_chunks_pusher = async(launch::async, [&q_chunks_to_write, &chunks]() {
+      for (const auto &chunk : chunks)
+        if (!chunk.exists)
+          q_chunks_to_write.push_front(chunk);
+    });
+
+    auto rbd_readers = make_jobs(rbd_streams, [&q_chunks_to_read, &q_chunks_to_write, &img]() {
       for (;;) {
-        auto chunk = q1.pop_back();
+        auto chunk = q_chunks_to_read.pop_back();
         if (!chunk)
           break; // end of stream
 
-        if (!chunk->exists)
-          throw "Should never happen";
+        assert(chunk->exists);
 
-        // TODO: read_iterate ? if so, push chunks to q2, instead of ceph_bufferlist...
+        // TODO: read_iterate ? if so, push chunks to q_chunks_to_write, instead of ceph_bufferlist...
         if (img.read(chunk->offset, chunk->len, chunk->bl) != (ssize_t)chunk->len) {
           throw "Fail to read from Ceph";
         }
 
-        q2.push_front(move(chunk));
+        q_chunks_to_write.push_front(move(chunk));
       }
     });
-    for (auto &h : *handles2)
+
+    for (auto &h : *rbd_readers)
       h.wait();
-    for (auto &h : *handles2)
+    zero_chunks_pusher.wait();
+
+    for (auto &h : *rbd_readers)
       h.get();
+    zero_chunks_pusher.get();
   });
 
-  auto qed_writer = async(launch::async, [&q2, &qed]() {
+  auto qed_writer = async(launch::async, [&q_chunks_to_write, &qed]() {
     for (;;) {
-      auto chunk = q2.pop_back();
+      auto chunk = q_chunks_to_write.pop_back();
       if (!chunk)
         break;
       if (chunk->exists) {
@@ -100,17 +105,16 @@ static void transfer(Image &img, QEDImage &qed, const vector<diffchunk> &chunks)
   });
 
   cout << "Start waiting 1" << endl;
-  exists_chunks_pusher.wait();
-  cout << "Start waiting 2" << endl;
-  zero_chunks_pusher.wait();
-  cout << "Start waiting 3" << endl;
-  rbd_reader.wait();
-  cout << "Start waiting 4" << endl;
-  qed_writer.wait();
-  cout << "Start waiting 5" << endl;
+  fill_chunks_to_read.wait();
 
-  exists_chunks_pusher.get();
-  zero_chunks_pusher.get();
+  cout << "Start waiting 2" << endl;
+  rbd_reader.wait();
+
+  cout << "Start waiting 3" << endl;
+  qed_writer.wait();
+
+  cout << "Operations complete. Getting results." << endl;
+  fill_chunks_to_read.get();
   rbd_reader.get();
   qed_writer.get();
 }

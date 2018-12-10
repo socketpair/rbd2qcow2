@@ -10,7 +10,7 @@ using namespace ::std;
 // Formatting 'qwe.qed', fmt=qed size=2147483648 cluster_size=65536
 int main() {
   try {
-    QEDImage qwe("yyy.qed", 2ull * 1024 * 1024 * 1024, "xxx.qed");
+    QEDImage qwe("yyy.qed", 2ull * 1024 * 1024 * 1024, "second.qed");
     qwe.write(1, 1, "*");
     return 0;
 

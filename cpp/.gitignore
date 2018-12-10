@@ -3,3 +3,5 @@
 main
 a.out
 *.bc
+/.idea
+/cmake-build-debug

@@ -1,5 +1,6 @@
 # -fsanitize=undefined
-CXXFLAGS += -std=c++17 --save-temps -O3 -Wall -Wextra -pthread
+CXXFLAGS += -std=c++11 --save-temps -O3 -Wall -Wextra -pedantic -pthread
+#-march=skylake-avx512
 LDFLAGS += -pthread -lrbd -g -lrados -lstdc++
 
 #CC=clang-6.0

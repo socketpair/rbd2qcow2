@@ -26,7 +26,7 @@ public:
 
   void push_front(LimitedQ::cell &&item) {
     if (!item)
-      throw "Passsing empty item is not allowed";
+      throw invalid_argument("Passsing empty item is not allowed");
 
     unique_lock<mutex> lk(m);
 

@@ -1,11 +1,14 @@
 #include <algorithm>
+#include <array>
+#include <cassert>
+#include <cstdlib>
 #include <cstring> // memset
 #include <fcntl.h> // posix_fallocate
+#include <functional>
 #include <iostream>
 #include <map>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <unistd.h>
 #include <vector>
 
@@ -14,19 +17,30 @@
 using namespace std;
 
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+
 static uint32_t le32_to_cpu(uint32_t x) { return x; }
+
 static uint32_t cpu_to_le32(uint32_t x) { return x; }
+
 static uint64_t le64_to_cpu(uint64_t x) { return x; }
+
 static uint64_t cpu_to_le64(uint64_t x) { return x; }
+
 #else
-__builtin_bswap32
+static uint32_t le32_to_cpu(uint32_t x) { return __builtin_bswap32(x); }
+
+static uint32_t cpu_to_le32(uint32_t x) { return __builtin_bswap32(x); }
+
+static uint64_t le64_to_cpu(uint64_t x) { return __builtin_bswap64(x); }
+
+static uint64_t cpu_to_le64(uint64_t x) { return __builtin_bswap64(x); }
 #endif
 
 template <class T> static unsigned int mylog2(T x) {
   if (!x)
-    throw "Zero and log";
+    throw invalid_argument("Zero and log");
   if (x & (x - 1))
-    throw "Is not a power of 2";
+    throw invalid_argument("Is not a power of 2");
 
   if (sizeof x <= sizeof(unsigned int))
     return __builtin_ctz(x);
@@ -34,7 +48,8 @@ template <class T> static unsigned int mylog2(T x) {
     return __builtin_ctzl(x);
   if (sizeof x == sizeof(unsigned long long))
     return __builtin_ctzll(x);
-  throw("should never happend");
+
+  throw runtime_error("Should never happend");
 }
 
 typedef struct __attribute__((packed)) {
@@ -56,104 +71,37 @@ typedef struct __attribute__((packed)) {
   uint32_t backing_filename_size;   /* in bytes */
 } qed_header;
 
-#define QED_F_BACKING_FILE 1
-#define QED_F_NEED_CHECK 2
+#define QED_F_BACKING_FILE 1u
+#define QED_F_NEED_CHECK 2u
 
 // i.e. RAW ?
-#define QED_F_BACKING_FORMAT_NO_PROBE 4
-
-// TODO: validate indexes (upper value) as table_size_in_bytes / sizeof(uint64_t)
-// TODO: index -> size_t ?
-class L2Map_fio {
-public:
-  L2Map_fio(int fd_, uint64_t offset_, uint64_t cluster_mask_, uint64_t table_size_in_bytes, bool readonly_)
-      : fd(fd_), l2_table_file_offset(offset_), cluster_mask(~cluster_mask_), readonly(readonly_) {
-
-    (void)table_size_in_bytes;
-  }
-
-  uint64_t get_offset(uint64_t l2_index) const {
-
-    uint64_t abs_offset;
-    if ((size_t)::pread(fd, &abs_offset, sizeof(abs_offset), l2_table_file_offset + l2_index * sizeof(uint64_t)) !=
-        sizeof(abs_offset))
-      throw "Fail to read L2 entry";
-
-    return le64_to_cpu(abs_offset) & cluster_mask;
-  }
-
-  void set_offset(uint64_t l2_index, uint64_t xxx) {
-    if (readonly)
-      throw "This map is readonly";
-    xxx = cpu_to_le64(xxx & cluster_mask);
-    if ((size_t)::pwrite(fd, &xxx, sizeof(xxx), l2_table_file_offset + l2_index * sizeof(uint64_t)) != sizeof(xxx))
-      throw "Error writing L2 entry";
-  }
-
-private:
-  const int fd;
-  const uint64_t l2_table_file_offset;
-  const uint64_t cluster_mask;
-  const bool readonly;
-};
-
-class L2Map_cached {
-public:
-  L2Map_cached(int fd_, uint64_t offset_, uint64_t cluster_mask_, uint64_t table_size_in_bytes, bool readonly_)
-      : fd(fd_), l2_table_file_offset(offset_), cluster_mask(~cluster_mask_), readonly(readonly_) {
-
-    // Take advantage of transparent hugepages?
-    cache.reset(new uint64_t[table_size_in_bytes / sizeof(uint64_t)]);
-
-    if ((size_t)::pread(fd, cache.get(), table_size_in_bytes, l2_table_file_offset) != table_size_in_bytes)
-      throw "Fail to read L2 entry";
-  }
-
-  uint64_t get_offset(uint64_t l2_index) const {
-    // TODO: bswap in constructor (!)
-    return le64_to_cpu(cache[l2_index]) & cluster_mask;
-  }
-
-  void set_offset(uint64_t l2_index, uint64_t xxx) {
-    if (readonly)
-      throw "This map is readonly";
-    xxx = cpu_to_le64(xxx & cluster_mask);
-    if ((size_t)::pwrite(fd, &xxx, sizeof(xxx), l2_table_file_offset + l2_index * sizeof(uint64_t)) != sizeof(xxx))
-      throw "Error writing L2 entry";
-    cache[l2_index] = cpu_to_le64(xxx & cluster_mask);
-  }
-
-private:
-  const int fd;
-  unique_ptr<uint64_t[]> cache;
-  const uint64_t l2_table_file_offset;
-  const uint64_t cluster_mask;
-  const bool readonly;
-};
+#define QED_F_BACKING_FORMAT_NO_PROBE 4u
 
 class L2Map_mmap {
 public:
   L2Map_mmap(int fd, uint64_t l2_table_file_offset, uint64_t cluster_mask_, uint64_t table_size_in_bytes_,
              bool readonly_)
-      : table_size_in_bytes(table_size_in_bytes_), l2_table(NULL), cluster_mask(~cluster_mask_), readonly(readonly_) {
-    l2_table = (uint64_t *)::mmap(NULL, table_size_in_bytes, readonly ? PROT_READ : (PROT_READ | PROT_WRITE),
+      : table_size_in_bytes(table_size_in_bytes_), l2_table(nullptr), cluster_mask(~cluster_mask_),
+        readonly(readonly_) {
+    l2_table = (uint64_t *)::mmap(nullptr, table_size_in_bytes, readonly ? PROT_READ : (PROT_READ | PROT_WRITE),
                                   MAP_SHARED, fd, l2_table_file_offset);
     if (!l2_table)
       throw "Fail to mmap L2 table";
   }
 
   ~L2Map_mmap() {
+    if (!readonly && ::msync(l2_table, table_size_in_bytes, MS_SYNC) == -1)
+      terminate();
     if (::munmap(l2_table, table_size_in_bytes) == -1)
       terminate();
-    // throw "Fail to unmap L2 table";
   }
 
-  uint64_t get_offset(uint64_t l2_index) const { return le64_to_cpu(l2_table[l2_index]) & cluster_mask; }
+  uint64_t get_offset(size_t l2_index) const { return le64_to_cpu(l2_table[l2_index]) & cluster_mask; }
 
-  void set_offset(uint64_t l2_index, uint64_t xxx) {
+  void set_offset(size_t l2_index, uint64_t offset) {
     if (readonly)
       throw "L2map is readonly!"; // have to check, otherwise, segfault.
-    l2_table[l2_index] = cpu_to_le64(xxx & cluster_mask);
+    l2_table[l2_index] = cpu_to_le64(offset & cluster_mask);
   }
 
 private:
@@ -185,13 +133,36 @@ private:
   const bool readonly;
 };
 
+static void repeatable_pread(int fd, void *buf_, size_t count, size_t offset) {
+  uint8_t *buf = static_cast<uint8_t *>(buf_);
+  while (count) {
+    ssize_t r = ::pread(fd, buf, count, offset);
+    if (r == -1)
+      throw "pread error";
+    buf += r;
+    count -= r;
+    offset += r;
+  }
+}
+
+static void repeatable_pwrite(int fd, const void *buf_, size_t count, size_t offset) {
+  const uint8_t *buf = static_cast<const uint8_t *>(buf_);
+  while (count) {
+    ssize_t r = ::pwrite(fd, buf, count, offset);
+    if (r == -1)
+      throw "pwrite error";
+    buf += r;
+    count -= r;
+    offset += r;
+  }
+}
+
 void QEDImage::print() const {
   qed_header h;
 
   struct stat s;
 
-  if (::pread(fd, &h, sizeof(h), 0) != sizeof(h))
-    throw "Fail to read header";
+  repeatable_pread(fd, &h, sizeof(h), 0);
 
   uint32_t clustersize = le32_to_cpu(h.cluster_size);
 
@@ -213,8 +184,7 @@ void QEDImage::print() const {
   if (le64_to_cpu(h.features) & QED_F_BACKING_FILE) {
     uint32_t fs = le32_to_cpu(h.backing_filename_size);
     unique_ptr<char[]> fn(new char[fs + 1]);
-    if (::pread(fd, fn.get(), fs, le32_to_cpu(h.backing_filename_offset)) != (ssize_t)fs)
-      throw "Erro reading backing_filename";
+    repeatable_pread(fd, fn.get(), fs, le32_to_cpu(h.backing_filename_offset));
     fn[fs] = 0;
     cout << "backing file: " << fn.get() << endl;
   } else {
@@ -270,9 +240,13 @@ void QEDImage::print() const {
 }
 
 void QEDImage::create(const char *filename, uint64_t size, const char *backing_stor) {
+  const uint32_t table_size = 4;          // in clusters
+  const uint32_t cluster_size = 1u << 16; // in bytes
 
-  // TODO: check upper limit
-  if (!size || size % 512)
+  const uint64_t upperlimit = uint64_t(table_size * cluster_size / sizeof(uint64_t)) *
+                              uint64_t(table_size * cluster_size / sizeof(uint64_t)) * cluster_size;
+
+  if (!size || size % 512 || size > upperlimit)
     throw "Wrong size";
 
   // TODO: open temporary file + fsync + atomic rename
@@ -281,9 +255,7 @@ void QEDImage::create(const char *filename, uint64_t size, const char *backing_s
     throw "Fail to open image file";
 
   try {
-    const uint32_t header_size = 1;        // in clusters
-    const uint32_t table_size = 4;         // inclusters
-    const uint32_t cluster_size = 1 << 16; // in bytes
+    const uint32_t header_size = 1; // in clusters
 
     file_size = 0;
     allocate((header_size + table_size) * cluster_size);
@@ -292,7 +264,7 @@ void QEDImage::create(const char *filename, uint64_t size, const char *backing_s
     memset(&h, 0, sizeof(h));
     h.magic = cpu_to_le32(0x00444551);
     h.image_size = cpu_to_le64(size);
-    h.cluster_size = cpu_to_le32(65536);
+    h.cluster_size = cpu_to_le32(cluster_size);
     h.table_size = cpu_to_le32(table_size);
     h.header_size = cpu_to_le32(header_size);
     h.l1_table_offset = cpu_to_le64(header_size * cluster_size);
@@ -304,20 +276,18 @@ void QEDImage::create(const char *filename, uint64_t size, const char *backing_s
         throw "Empty string as backing stor filename ?";
 
       // We support only header size=1 cluster for now
-      if (l > 0xFFFFFFFF || l > cluster_size - sizeof(h))
+      if (l > cluster_size - sizeof(h))
         throw "Too big backing_stor filename";
 
       features |= QED_F_BACKING_FILE;
       h.backing_filename_offset = cpu_to_le32(sizeof(h));
       h.backing_filename_size = cpu_to_le32(l);
 
-      if ((uint64_t)::pwrite(fd, backing_stor, l, sizeof(h)) != l)
-        throw "Failed to write backing_stor filename";
+      repeatable_pwrite(fd, backing_stor, l, sizeof(h));
     }
 
     h.features = cpu_to_le64(features);
-    if ((uint64_t)::pwrite(fd, &h, sizeof(h), 0) != sizeof(h))
-      throw "Failed to write header file";
+    repeatable_pwrite(fd, &h, sizeof(h), 0);
 
     fdatasync();
 
@@ -336,8 +306,7 @@ void QEDImage::initialize(const char *filename) {
 
     qed_header h;
 
-    if (::pread(fd, &h, sizeof(h), 0) != sizeof(h))
-      throw "Fail to read header";
+    repeatable_pread(fd, &h, sizeof(h), 0);
 
     if (h.magic != cpu_to_le32(0x00444551))
       throw "Wrong magic";
@@ -348,8 +317,6 @@ void QEDImage::initialize(const char *filename) {
     if (h.autoclear_features)
       throw "Some autoclear bits";
 
-    logical_image_size = le64_to_cpu(h.image_size);
-
     cluster_size = le32_to_cpu(h.cluster_size);
     cluster_bits = mylog2(cluster_size);
     if (cluster_bits < 12 || cluster_bits > 26) {
@@ -358,13 +325,21 @@ void QEDImage::initialize(const char *filename) {
     }
     cluster_mask = cluster_size - 1; //(((uint64_t)1)<<cluster_bits);
 
-    unsigned int table_size_bits = mylog2(le32_to_cpu(h.table_size));
+    size_t table_size_bits = mylog2(le32_to_cpu(h.table_size));
     if (!table_size_bits || table_size_bits > 4)
       throw "Wrong table size";
 
     table_bits = table_size_bits + cluster_bits - mylog2(sizeof(uint64_t));
-    table_mask = (1 << table_bits) - 1;
-    table_size_in_bytes = 1 << (table_size_bits + cluster_bits);
+    table_mask = (1u << table_bits) - 1;
+    table_size_in_bytes = 1u << (table_size_bits + cluster_bits);
+
+    const uint64_t upperlimit = uint64_t(table_size_in_bytes / sizeof(uint64_t)) *
+                                uint64_t(table_size_in_bytes / sizeof(uint64_t)) * cluster_size;
+
+    logical_image_size = le64_to_cpu(h.image_size);
+
+    if (logical_image_size % 512 || !logical_image_size || logical_image_size > upperlimit)
+      throw "Wrong image_size";
 
     uint64_t l1_table_offset = le64_to_cpu(h.l1_table_offset); // in bytes
     if (l1_table_offset % cluster_size)
@@ -381,14 +356,13 @@ void QEDImage::initialize(const char *filename) {
       throw "File too short";
 
     l1.reset(new L2Map_mmap(fd, l1_table_offset, cluster_mask, table_size_in_bytes, readonly));
-    layer_cache.reset(
-        new remove_reference<decltype(*layer_cache)>::type(fd, cluster_mask, table_size_in_bytes, readonly));
+    layer_cache.reset(new Layercache<L2Map_mmap>(fd, cluster_mask, table_size_in_bytes, readonly));
 
     if (le64_to_cpu(h.features) & QED_F_BACKING_FILE) {
       uint32_t fs = le32_to_cpu(h.backing_filename_size);
+
       unique_ptr<char[]> fn(new char[fs + 1]);
-      if (::pread(fd, fn.get(), fs, le32_to_cpu(h.backing_filename_offset)) != (ssize_t)fs)
-        throw "Erro reading backing_filename";
+      repeatable_pread(fd, fn.get(), fs, le32_to_cpu(h.backing_filename_offset));
       fn[fs] = 0;
       bstore.reset(new QEDImage(fn.get(), true));
     }
@@ -406,18 +380,22 @@ void QEDImage::fdatasync() const {
     throw "fdatasync error";
 }
 
-QEDImage::QEDImage(const char *filename, uint64_t size, const char *backing_store) : readonly(false) {
+QEDImage::QEDImage(const char *filename, uint64_t size, const char *backing_store) : readonly(false), myname(filename) {
   create(filename, size, backing_store);
   initialize(filename);
 }
-QEDImage::QEDImage(const char *filename, bool readonly_) : readonly(readonly_) { initialize(filename); }
+
+QEDImage::QEDImage(const char *filename, bool readonly_) : readonly(readonly_), myname(filename) {
+  initialize(filename);
+}
 
 QEDImage::~QEDImage() {
   fdatasync();
   ::close(fd);
 }
 
-uint64_t QEDImage::allocate(uint64_t count) {
+// retuns beginning of allocated region (i.e. offset of previous file end for now)
+uint64_t QEDImage::allocate(size_t count) {
   if (readonly)
     throw "Mutate on readonly image";
   const uint64_t ret = file_size;
@@ -425,16 +403,17 @@ uint64_t QEDImage::allocate(uint64_t count) {
   if (posix_fallocate(fd, file_size, count))
     throw("fallocate error");
 #else
-  unique_ptr<uint8_t[]> x(new uint8_t[count]);
-  memset(x.get(), 0, count);
-  if ((uint64_t)::pwrite(fd, x.get(), count, file_size) != count)
-    throw "Failed to enlarge file";
+  vector<uint8_t> x(count, 0);
+  repeatable_pwrite(fd, x.data(), count, file_size);
 #endif
   file_size += count;
   return ret;
 }
 
-void QEDImage::read_bstore(uint64_t offset, size_t count, uint8_t *dst) {
+void QEDImage::read_bstore(uint64_t offset, size_t count, void *dst_) {
+
+  uint8_t *dst = static_cast<uint8_t *>(dst_);
+
   if (bstore && count) {
     const uint64_t lll = bstore->logical_image_size;
     if (offset < lll) {
@@ -449,19 +428,136 @@ void QEDImage::read_bstore(uint64_t offset, size_t count, uint8_t *dst) {
     memset(dst, 0, count);
 }
 
-void QEDImage::io(uint64_t logical_offset, size_t count, uint8_t *dst, const uint8_t *src, Opmode mode) {
+#if 0
+    return any_of(/*execution::par,*/ raw_buf, raw_buf + items, [](size_t v) { return bool(v); });
+  //__assume_aligned(raw_buf, 64);
+#endif
+
+static bool mem_is_zero(const void *data, size_t count) {
+
+  if (!count)
+    throw "zerocount";
+
+  const uint8_t *data8 = static_cast<const uint8_t *>(data);
+
+  for (; (size_t(data8) % sizeof(size_t)) && count; data8++, count--)
+    if (*data8)
+      return false;
+
+  const size_t *raw_buf = reinterpret_cast<const size_t *>(data8);
+
+  // https://en.cppreference.com/w/cpp/thread/hardware_destructive_interference_size
+  const size_t align = 128;
+
+  for (; count >= sizeof(size_t) && (size_t(raw_buf) % align); count -= sizeof(size_t), raw_buf++)
+    if (*raw_buf)
+      return false;
+
+  for (; count >= align; count -= align, raw_buf += align / sizeof(size_t)) {
+    size_t x = 0;
+
+    // TODO: prefetch
+    // TODO: OR even and odd cells ?
+    // Now, vectorize that (!)
+    for (const size_t *j = raw_buf; j < raw_buf + align / sizeof(size_t); j++)
+      x |= *j;
+
+    if (x)
+      return false;
+  }
+
+  for (; count >= sizeof(size_t); count -= sizeof(size_t), raw_buf++)
+    if (*raw_buf)
+      return false;
+
+  data8 = reinterpret_cast<const uint8_t *>(raw_buf);
+  for (; count; data8++, count--)
+    if (*data8)
+      return false;
+
+  return true;
+}
+
+void QEDImage::prefill(const uint64_t logical_offset, const size_t incluster_len, const uint64_t phys_cluster_offset) {
+  if (!bstore)
+    return;
+
+  // Whole cluster have to be written. Prefilling will be completely overwritten.
+  if (incluster_len == cluster_size)
+    return;
+
+  const uint64_t logical_cluster_start = logical_offset & ~cluster_mask;
+
+  assert(incluster_len <= cluster_size);
+  assert((phys_cluster_offset & cluster_mask) == 0);
+  assert(logical_offset + incluster_len <= logical_cluster_start + cluster_size);
+
+  if (logical_cluster_start >= bstore->logical_image_size)
+    return;
+
+  struct {
+    size_t datalen;
+    uint64_t logical_offset;
+    uint64_t phys_offset;
+  } ops[2];
+
+  ops[0].logical_offset = logical_cluster_start;
+  ops[0].datalen = logical_offset - logical_cluster_start;
+  ops[0].phys_offset = phys_cluster_offset;
+
+  ops[1].logical_offset = logical_offset + incluster_len;
+  ops[1].datalen = logical_cluster_start + cluster_size - ops[1].logical_offset;
+  ops[1].phys_offset = phys_cluster_offset + cluster_size - ops[1].datalen;
+
+  // 8192 is arbitrary chosen constant.
+  // if parts are close enough, read (and write) them in one IO.
+  if (ops[0].datalen && ops[1].datalen && incluster_len <= 8192) {
+    ops[0].datalen = cluster_size;
+    ops[1].datalen = 0;
+  }
+
+  // alignas(128) char cacheline[128];
+  static const size_t alignment = 128;
+
+  // Having static buffer prevents multithread access...
+  unique_ptr<void, function<void(void *)>> buf(::aligned_alloc(alignment, cluster_size), free);
+
+  if (!buf)
+    throw "aligned memory allocation error";
+
+  void *databuf = buf.get();
+
+  for (const auto &i : ops) {
+    if (!i.datalen)
+      continue;
+
+    read_bstore(i.logical_offset, i.datalen, databuf);
+
+    if (mem_is_zero(databuf, i.datalen))
+      continue;
+
+    repeatable_pwrite(fd, databuf, i.datalen, i.phys_offset);
+  }
+}
+
+void QEDImage::io(uint64_t logical_offset, size_t count, void *dst_, const void *src_, Opmode mode) {
+  cout << "io: " << mode << " from " << myname << endl;
+
   if (readonly && mode != Read)
     throw "Mutate operation on readonly image";
 
   if (count > logical_image_size || logical_offset > logical_image_size - count)
     throw "Attempt to do IO beyond the end.";
 
-  uint64_t incluster_len;
+  uint8_t *dst = static_cast<uint8_t *>(dst_);
+  const uint8_t *src = static_cast<const uint8_t *>(src_);
+
+  size_t incluster_len;
   for (; count; dst += incluster_len, src += incluster_len, logical_offset += incluster_len, count -= incluster_len) {
 
     uint64_t off = logical_offset;
 
-    const uint64_t incluster_offset = off & cluster_mask;
+    const size_t incluster_offset = off & cluster_mask;
     off >>= cluster_bits;
 
     const size_t l2_index = off & table_mask;
@@ -475,13 +571,10 @@ void QEDImage::io(uint64_t logical_offset, size_t count, uint8_t *dst, const uin
 
     if (!l2_table_file_offset) {
       if (mode == Read) {
-        // cerr << "No L2 table, so reading ZEROES" << endl;
+        // cerr << "No L2 table, so reading backing store" << endl;
         read_bstore(logical_offset, incluster_len, dst);
         continue;
       }
-      if (mode == WriteZeroes)
-        continue;
-
       // cerr << "Allocating a new L2 table" << endl;
       l2_table_file_offset = allocate(table_size_in_bytes);
       l1->set_offset(l1_index, l2_table_file_offset);
@@ -503,28 +596,18 @@ void QEDImage::io(uint64_t logical_offset, size_t count, uint8_t *dst, const uin
         read_bstore(logical_offset, incluster_len, dst);
         continue;
       }
-      if (mode == WriteZeroes)
-        continue;
       // cerr << "Allocating a new data cluster (!)" << endl;
       data_cluster_offset = allocate(cluster_size);
       l2->set_offset(l2_index, data_cluster_offset);
 
-      // read backing store if not full rewrite
-      if (bstore && incluster_len != cluster_size) {
-        uint64_t cluster_start = logical_offset & ~cluster_mask;
-        if (cluster_start < bstore->logical_image_size) {
-          uint8_t *raw_buf = new uint8_t[cluster_size];
-          unique_ptr<uint8_t[]> buf(raw_buf);
-          // TODO: optimize: read less the cluster!
-          read_bstore(cluster_start, cluster_size, raw_buf);
-          ::close(0x1234);
-          ::close(1234);
-          if (any_of(/*execution::par,*/ raw_buf, raw_buf + cluster_size, [](uint8_t v) { return bool(v); })) {
-            if ((uint64_t)::pwrite(fd, buf.get(), cluster_size, data_cluster_offset) != cluster_size)
-              throw "Write error";
-          }
-        }
-      }
+      if (mode == WriteZeroes)
+        continue;
+
+      if (mode == Write && mem_is_zero(src, incluster_len))
+        continue;
+
+      // Yes, we have to prefill if AllocData requested.
+      prefill(logical_offset, incluster_len, data_cluster_offset);
     }
 
     if (mode == AllocData) {
@@ -536,8 +619,7 @@ void QEDImage::io(uint64_t logical_offset, size_t count, uint8_t *dst, const uin
 
     if (mode == Read) {
       // cerr << "Reading user data at abs. offset " << data_offset << " " << incluster_len << " bytes" << endl;
-      if ((uint64_t)::pread(fd, dst, incluster_len, data_offset) != incluster_len)
-        throw "Read error";
+      repeatable_pread(fd, dst, incluster_len, data_offset);
       continue;
     }
     if (mode == WriteZeroes) {
@@ -547,8 +629,7 @@ void QEDImage::io(uint64_t logical_offset, size_t count, uint8_t *dst, const uin
     }
     if (mode == Write) {
       // cerr << "Writing user data at abs. offset " << data_offset << " " << incluster_len << " bytes" << endl;
-      if ((uint64_t)::pwrite(fd, src, incluster_len, data_offset) != incluster_len)
-        throw "Write error";
+      repeatable_pwrite(fd, src, incluster_len, data_offset);
       continue;
     }
     throw "Unknown mode";
